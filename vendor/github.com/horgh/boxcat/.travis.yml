@@ -1,0 +1,5 @@
+language: go
+go:
+  - 1.9.x
+before_script:
+  - go get -d github.com/horgh/catbox

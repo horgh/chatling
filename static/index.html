@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>chatling</title>
+<script>
+const TYPE_SYSTEM  = 0;
+const TYPE_MESSAGE = 1;
+const TYPE_SEND    = 2;
+
+document.addEventListener('DOMContentLoaded', function() {
+	const connect_button = document.getElementById('connect');
+	if (!connect_button) {
+		window.console.log('connect button element not found');
+		return;
+	}
+
+	connect_button.addEventListener('keyup', maybe_connect);
+	connect_button.addEventListener('click', maybe_connect);
+});
+
+const maybe_connect = function() {
+	status.innerHTML = '';
+
+	const name_element     = document.getElementById('name');
+	const password_element = document.getElementById('password');
+	const status_element   = document.getElementById('status');
+	const register_element = document.getElementById('register');
+	const chat_element     = document.getElementById('chat');
+	if (!name_element || !password_element || !status_element ||
+		!register_element || !chat_element) {
+		window.console.log('maybe_connect: element not found');
+		return;
+	}
+
+	const name     = name_element.value.trim();
+	const password = password_element.value.trim();
+	if (name === '' || password === '') {
+		window.console.log('name/password is blank');
+		status.innerHTML = 'You must specify name and password.';
+		return;
+	}
+
+	register_element.className = 'hidden';
+	chat_element.className     = '';
+	connect(name, password)
+};
+
+const connect = function(name, password) {
+	const input = document.getElementById('input');
+	if (!input) {
+		window.console.log('input element not found');
+		return;
+	}
+
+	const url = 'ws://' + window.location.host + '/chat';
+	const conn = new WebSocket(url);
+
+	conn.onclose = function() {
+		input.disabled = true;
+		output({type: TYPE_SYSTEM, message: 'Connection closed.'});
+	};
+
+	conn.onerror = function(evt) {
+		input.disabled = true;
+		// https://www.w3.org/TR/2012/CR-websockets-20120920/ says event type
+		// is error.
+		// https://developer.mozilla.org/en-US/docs/Web/API/ErrorEvent
+		output({type: TYPE_SYSTEM, message: 'Error: ' + evt.message});
+	};
+
+	conn.onmessage = function(evt) {
+		output({type: TYPE_MESSAGE, message: 'Got message: ' + evt.data});
+		const m = JSON.parse(evt.data)
+		handle_message(m);
+	};
+
+	conn.onopen = function() {
+		output({type: TYPE_SYSTEM, message: 'Connection opened.'});
+		conn.send(JSON.stringify({
+			name:     name,
+			password: password
+		}));
+		input.disabled = false;
+		input.focus();
+	};
+
+	input.addEventListener('keyup', function(evt) {
+		if (evt.key !== 'Enter') {
+			return;
+		}
+
+		output({
+			type:    TYPE_SEND,
+			message: input.value
+		});
+
+		conn.send(JSON.stringify({
+			message: input.value
+		}));
+
+		input.value = '';
+	});
+};
+
+const output = function(m) {
+	const line = document.createElement('div');
+
+	var text = '';
+
+	switch (m.type) {
+	case TYPE_SYSTEM:
+		line.classList.add('type-system');
+		text = ' - ' + m.message;
+		break;
+	case TYPE_MESSAGE:
+		line.classList.add('type-message');
+		text = ' < ' + m.message;
+		break;
+	case TYPE_SEND:
+		line.classList.add('type-send');
+		text = ' > ' + m.message;
+		break;
+	default:
+		break;
+	}
+
+	line.innerHTML = text;
+
+	const output_ele = document.getElementById('output');
+	if (!output_ele) {
+		window.console.log('output element not found');
+		return;
+	}
+
+	output_ele.appendChild(line);
+};
+
+const handle_message = function(m) {
+};
+</script>
+<style>
+#output {
+	width: 100%;
+	border: 1px solid black;
+	box-sizing: border-box;
+	padding: 5px;
+}
+#input {
+	width: 100%;
+}
+input {
+	padding: 0;
+	margin: 0;
+	box-sizing: border-box;
+}
+.hidden {
+	display: none;
+}
+</style>
+<h1>chatling</h1>
+<div id="register">
+	<input type="text" id="name"     placeholder="Name" value="test"><br>
+	<input type="text" id="password" placeholder="Password" value="test"><br>
+	<button id="connect" type="button">Connect</button>
+	<div id="status"></div>
+</div>
+<div id="chat" class="hidden">
+	<div id="output"></div>
+	<input type="text" id="input" disabled>
+</div>
