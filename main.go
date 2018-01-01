@@ -1,8 +1,3 @@
-// TODO(horgh): If there's no webclient connected for the IRC client we still
-// need to process messages from the IRC client. Otherwise we'll end up
-// blocking on the channels there and ceasing to respond to PINGs.
-//
-// TODO(horgh): Also we need to be able to reap dead clients.
 package main
 
 import (
@@ -15,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -34,6 +30,7 @@ func main() {
 		log.Fatalf("error creating handler: %s", err)
 	}
 
+	log.Printf("chatling ready")
 	if err := http.ListenAndServe(args.address, h); err != nil {
 		log.Fatalf("error serving: %s", err)
 	}
@@ -87,12 +84,13 @@ func printUsage(err error) {
 
 // Handler responds to HTTP requests.
 type Handler struct {
-	dir        string
-	upgrader   *websocket.Upgrader
-	verbose    bool
-	ircServer  string
-	ircPort    uint16
-	ircClients map[string]*ircclient.Client
+	dir             string
+	upgrader        *websocket.Upgrader
+	verbose         bool
+	ircServer       string
+	ircPort         uint16
+	ircClients      map[string]*IRCClient
+	ircClientsMutex *sync.Mutex
 }
 
 func newHandler(args *Args) (Handler, error) {
@@ -100,12 +98,13 @@ func newHandler(args *Args) (Handler, error) {
 	// demand so we don't have to restart this program to see new HTML/JS.
 
 	return Handler{
-		dir:        args.dir,
-		upgrader:   &websocket.Upgrader{},
-		verbose:    args.verbose,
-		ircServer:  args.ircServer,
-		ircPort:    args.ircPort,
-		ircClients: map[string]*ircclient.Client{},
+		dir:             args.dir,
+		upgrader:        &websocket.Upgrader{},
+		verbose:         args.verbose,
+		ircServer:       args.ircServer,
+		ircPort:         args.ircPort,
+		ircClients:      map[string]*IRCClient{},
+		ircClientsMutex: &sync.Mutex{},
 	}, nil
 }
 
@@ -151,12 +150,12 @@ func (h Handler) chatRequest(w http.ResponseWriter, r *http.Request) {
 			log.Printf("%s: closed websocket", r.RemoteAddr)
 		}
 	}()
-
 	if h.verbose {
 		log.Printf("%s: opened websocket", r.RemoteAddr)
 	}
 
-	// The first message should provide info we need to set up the connection.
+	// The first message should provide info we need to set up/locate the
+	// connection.
 	m, err := readWebSocket(conn)
 	if err != nil {
 		h.logError(r, err)
@@ -169,56 +168,142 @@ func (h Handler) chatRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	// TODO(horgh): Password
 
-	client, err := h.getIRCClient(name)
+	recvChan, sendChan, err := h.getIRCConnection(name)
 	if err != nil {
-		h.logError(r, fmt.Errorf("error starting IRC client: %s", err))
+		h.logError(r, fmt.Errorf("error retrieving IRC connection: %s", err))
 		return
 	}
 
 	webRecvChan := make(chan map[string]string, 64)
 	go h.webSocketReader(r, conn, webRecvChan)
 
+LOOP:
 	for {
 		select {
 		case m, ok := <-webRecvChan:
 			if !ok {
-				return
+				break LOOP
 			}
-			h.handleClientMessage(r, client, m)
-		case m, ok := <-client.GetReceiveChannel():
+			h.handleClientMessage(r, sendChan, m)
+		case m, ok := <-recvChan:
 			if !ok {
-				return
+				break LOOP
 			}
-			h.handleIRCMessage(r, conn, name, client, m)
-		case err, ok := <-client.GetErrorChannel():
-			if !ok {
-				return
-			}
-			h.logError(r, fmt.Errorf("error from IRC: %s", err))
-			delete(h.ircClients, strings.ToLower(name))
-			client.Stop()
-			// TODO(horgh): Tell the websocket client something went wrong.
-			return
+			h.handleIRCMessage(r, conn, m)
 		}
 	}
+
+	// We could remove the listener from the IRCClient's listeners. It will be
+	// cleaned up when it blocks though.
 }
 
-func (h Handler) getIRCClient(name string) (*ircclient.Client, error) {
-	{
-		client, ok := h.ircClients[strings.ToLower(name)]
-		if ok {
-			return client, nil
+// IRCClient holds an IRC client connection and provides access to it from
+// multiple goroutines.
+//
+// An *ircclient.Client is really only usable by a single goroutine. Primarily
+// because it publishes each message only once. In order to handle multiple web
+// clients all using the same one, we wrap around it here and deliver the
+// message to each.
+type IRCClient struct {
+	name      string
+	client    *ircclient.Client
+	listeners []chan<- irc.Message
+	mutex     *sync.Mutex
+}
+
+func (h Handler) getIRCConnection(name string) (
+	<-chan irc.Message,
+	chan<- irc.Message,
+	error,
+) {
+	name = strings.ToLower(name)
+	recvChan := make(chan irc.Message, 128)
+
+	h.ircClientsMutex.Lock()
+	defer h.ircClientsMutex.Unlock()
+
+	client, ok := h.ircClients[name]
+	if ok {
+		client.mutex.Lock()
+		defer client.mutex.Unlock()
+		client.listeners = append(client.listeners, recvChan)
+		return recvChan, client.client.GetSendChannel(), nil
+	}
+
+	c := ircclient.NewClient(name, h.ircServer, h.ircPort)
+	_, sendChan, _, err := c.Start()
+	if err != nil {
+		return nil, nil, fmt.Errorf("error starting IRC client: %s: %s", name, err)
+	}
+
+	client = &IRCClient{
+		name:      name,
+		client:    c,
+		listeners: []chan<- irc.Message{recvChan},
+		mutex:     &sync.Mutex{},
+	}
+
+	h.ircClients[name] = client
+	go h.clientWorker(client)
+
+	return recvChan, sendChan, nil
+}
+
+func (h Handler) clientWorker(
+	c *IRCClient,
+) {
+LOOP:
+	for {
+		select {
+		case m, ok := <-c.client.GetReceiveChannel():
+			if !ok {
+				break LOOP
+			}
+			c.mutex.Lock()
+			newListeners := make([]chan<- irc.Message, 0, len(c.listeners))
+			for _, l := range c.listeners {
+				select {
+				case l <- m:
+					newListeners = append(newListeners, l)
+				default:
+					if h.verbose {
+						log.Printf("IRC client listener is too slow: %s", c.name)
+					}
+					close(l)
+				}
+			}
+			c.listeners = newListeners
+			c.mutex.Unlock()
+		case err, ok := <-c.client.GetErrorChannel():
+			if !ok {
+				break LOOP
+			}
+			if h.verbose {
+				log.Printf("IRC client error: %s: %s", c.name, err)
+			}
+			break LOOP
 		}
 	}
 
-	client := ircclient.NewClient(name, h.ircServer, h.ircPort)
-	if _, _, _, err := client.Start(); err != nil {
-		return nil, fmt.Errorf("error starting IRC client: %s", err)
+	if h.verbose {
+		log.Printf("Cleaning up IRC client: %s", c.name)
 	}
 
-	h.ircClients[strings.ToLower(name)] = client
+	h.ircClientsMutex.Lock()
+	defer h.ircClientsMutex.Unlock()
 
-	return client, nil
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+
+	for _, l := range c.listeners {
+		// TODO(horgh): Tell the websocket client something went wrong.
+		close(l)
+	}
+	c.listeners = nil
+
+	c.client.Stop()
+
+	delete(h.ircClients, strings.ToLower(c.name))
 }
 
 func (h Handler) webSocketReader(
@@ -233,7 +318,6 @@ func (h Handler) webSocketReader(
 			h.logError(r, err)
 			return
 		}
-
 		ch <- m
 	}
 }
@@ -276,13 +360,12 @@ var messageRE = regexp.MustCompile(`(?i)/msg\s+(\S+)\s+(.+)`)
 // Do something with a message from a web client.
 func (h Handler) handleClientMessage(
 	r *http.Request,
-	client *ircclient.Client,
+	sendChan chan<- irc.Message,
 	m map[string]string,
 ) {
 	if h.verbose {
-		log.Printf("%s: read from websocket: %s", r.RemoteAddr, m)
+		log.Printf("%s: read from websocket: %#v", r.RemoteAddr, m)
 	}
-
 	message, ok := m["message"]
 	if !ok || message == "" {
 		h.logError(r, fmt.Errorf("no message provided"))
@@ -290,7 +373,7 @@ func (h Handler) handleClientMessage(
 	}
 
 	if matches := joinRE.FindStringSubmatch(message); matches != nil {
-		client.GetSendChannel() <- irc.Message{
+		sendChan <- irc.Message{
 			Command: "JOIN",
 			Params:  []string{matches[1]},
 		}
@@ -298,20 +381,20 @@ func (h Handler) handleClientMessage(
 	}
 
 	if matches := messageRE.FindStringSubmatch(message); matches != nil {
-		client.GetSendChannel() <- irc.Message{
+		sendChan <- irc.Message{
 			Command: "PRIVMSG",
 			Params:  []string{matches[1], matches[2]},
 		}
 		return
 	}
+
+	h.logError(r, fmt.Errorf("unrecognized command: %#v", m))
 }
 
 // Do something with a message from an IRC client.
 func (h Handler) handleIRCMessage(
 	r *http.Request,
 	conn *websocket.Conn,
-	name string,
-	client *ircclient.Client,
 	m irc.Message,
 ) {
 	if h.verbose {
@@ -320,13 +403,6 @@ func (h Handler) handleIRCMessage(
 
 	if err := writeWebSocket(conn, m); err != nil {
 		h.logError(r, err)
-		return
-	}
-
-	if m.Command == "ERROR" {
-		h.logError(r, fmt.Errorf("ERROR from IRC client: %s", m))
-		delete(h.ircClients, strings.ToLower(name))
-		client.Stop()
 		return
 	}
 }
