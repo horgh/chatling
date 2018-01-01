@@ -249,6 +249,7 @@ func writeWebSocket(conn *websocket.Conn, v interface{}) error {
 
 var joinRE = regexp.MustCompile(`(?i)/join\s+(#\S*)`)
 var messageRE = regexp.MustCompile(`(?i)/msg\s+(\S+)\s+(.+)`)
+var nickRE = regexp.MustCompile(`(?)/nick\s+(\S+)`)
 
 // Do something with a message from a web client.
 func (w *WebClient) handleWebClientMessage(
@@ -283,6 +284,14 @@ func (w *WebClient) handleWebClientMessage(
 		// back to us by the server, and if we have other web clients using the
 		// same connection they won't otherwise see their own message.
 		c.publish(w.verbose, m)
+		return
+	}
+
+	if matches := nickRE.FindStringSubmatch(message); matches != nil {
+		sendChan <- irc.Message{
+			Command: "NICK",
+			Params:  []string{matches[1]},
+		}
 		return
 	}
 
