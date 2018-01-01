@@ -14,6 +14,13 @@ import (
 	"github.com/horgh/irc"
 )
 
+// WebClient represents a websockets client
+type WebClient struct {
+	verbose    bool
+	remoteAddr string
+	conn       *websocket.Conn
+}
+
 func (h Handler) chatRequest(w http.ResponseWriter, r *http.Request) {
 	conn, err := h.upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -31,6 +38,7 @@ func (h Handler) chatRequest(w http.ResponseWriter, r *http.Request) {
 	if h.verbose {
 		log.Printf("%s: opened websocket", r.RemoteAddr)
 	}
+	wc := WebClient{h.verbose, r.RemoteAddr, conn}
 
 	// The first message should provide info we need to set up/locate the
 	// connection.
@@ -53,7 +61,7 @@ func (h Handler) chatRequest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	webRecvChan := make(chan map[string]string, 64)
-	go h.webSocketReader(r, conn, webRecvChan)
+	go wc.webSocketReader(webRecvChan)
 
 LOOP:
 	for {
@@ -62,17 +70,21 @@ LOOP:
 			if !ok {
 				break LOOP
 			}
-			h.handleClientMessage(r, sendChan, m)
+			wc.handleClientMessage(sendChan, m)
 		case m, ok := <-recvChan:
 			if !ok {
 				break LOOP
 			}
-			h.handleIRCMessage(r, conn, m)
+			wc.handleIRCMessage(m)
 		}
 	}
 
 	// We could remove the listener from the IRCClient's listeners. It will be
 	// cleaned up when it blocks though.
+}
+
+func (w *WebClient) logError(err error) {
+	log.Printf("%s: %s", w.remoteAddr, err)
 }
 
 // IRCClient holds an IRC client connection and provides access to it from
@@ -184,16 +196,14 @@ LOOP:
 	delete(h.ircClients, strings.ToLower(c.name))
 }
 
-func (h Handler) webSocketReader(
-	r *http.Request,
-	conn *websocket.Conn,
+func (w *WebClient) webSocketReader(
 	ch chan<- map[string]string,
 ) {
 	for {
-		m, err := readWebSocket(conn)
+		m, err := readWebSocket(w.conn)
 		if err != nil {
 			close(ch)
-			h.logError(r, err)
+			w.logError(err)
 			return
 		}
 		ch <- m
@@ -236,17 +246,16 @@ var joinRE = regexp.MustCompile(`(?i)/join\s+(#\S*)`)
 var messageRE = regexp.MustCompile(`(?i)/msg\s+(\S+)\s+(.+)`)
 
 // Do something with a message from a web client.
-func (h Handler) handleClientMessage(
-	r *http.Request,
+func (w *WebClient) handleClientMessage(
 	sendChan chan<- irc.Message,
 	m map[string]string,
 ) {
-	if h.verbose {
-		log.Printf("%s: read from websocket: %#v", r.RemoteAddr, m)
+	if w.verbose {
+		log.Printf("%s: read from websocket: %#v", w.remoteAddr, m)
 	}
 	message, ok := m["message"]
 	if !ok || message == "" {
-		h.logError(r, fmt.Errorf("no message provided"))
+		w.logError(fmt.Errorf("no message provided"))
 		return
 	}
 
@@ -266,21 +275,19 @@ func (h Handler) handleClientMessage(
 		return
 	}
 
-	h.logError(r, fmt.Errorf("unrecognized command: %#v", m))
+	w.logError(fmt.Errorf("unrecognized command: %#v", m))
 }
 
 // Do something with a message from an IRC client.
-func (h Handler) handleIRCMessage(
-	r *http.Request,
-	conn *websocket.Conn,
+func (w *WebClient) handleIRCMessage(
 	m irc.Message,
 ) {
-	if h.verbose {
-		log.Printf("%s: read from IRC: %s", r.RemoteAddr, m)
+	if w.verbose {
+		log.Printf("%s: read from IRC: %s", w.remoteAddr, m)
 	}
 
-	if err := writeWebSocket(conn, m); err != nil {
-		h.logError(r, err)
+	if err := writeWebSocket(w.conn, m); err != nil {
+		w.logError(err)
 		return
 	}
 }
