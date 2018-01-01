@@ -11,13 +11,13 @@
   branch = "master"
   name = "github.com/horgh/boxcat"
   packages = ["."]
-  revision = "280b95c401fa025f29ce3897198d4a036195e947"
+  revision = "8fd2095419455e3b4224a08e949458bc95c3846a"
 
 [[projects]]
   branch = "master"
   name = "github.com/horgh/irc"
   packages = ["."]
-  revision = "6b83b645958d6ae7b604e47a1c0593a3d8eba6ff"
+  revision = "3f7ddc11df77aaa91b5c84aa73d740b263e929cd"
 
 [solve-meta]
   analyzer-name = "dep"

@@ -29,6 +29,9 @@ type Client struct {
 	errChan  chan error
 	doneChan chan struct{}
 	wg       *sync.WaitGroup
+
+	channels map[string]struct{}
+	mutex    *sync.Mutex
 }
 
 // NewClient creates a Client.
@@ -40,6 +43,9 @@ func NewClient(nick, serverHost string, serverPort uint16) *Client {
 
 		writeTimeout: 30 * time.Second,
 		readTimeout:  100 * time.Millisecond,
+
+		channels: map[string]struct{}{},
+		mutex:    &sync.Mutex{},
 	}
 }
 
@@ -150,6 +156,14 @@ func (c Client) reader(recvChan chan<- irc.Message) {
 				c.errChan <- fmt.Errorf("error sending pong: %s", err)
 				close(recvChan)
 				return
+			}
+		}
+
+		if m.Command == "JOIN" {
+			if m.SourceNick() == c.nick {
+				c.mutex.Lock()
+				c.channels[m.Params[0]] = struct{}{}
+				c.mutex.Unlock()
 			}
 		}
 
@@ -268,3 +282,14 @@ func (c Client) GetSendChannel() chan<- irc.Message { return c.sendChan }
 
 // GetErrorChannel retrieves the error channel.
 func (c Client) GetErrorChannel() <-chan error { return c.errChan }
+
+// GetChannels retrieves the IRC channels the client is on.
+func (c Client) GetChannels() []string {
+	var channels []string
+	c.mutex.Lock()
+	for k := range c.channels {
+		channels = append(channels, k)
+	}
+	c.mutex.Unlock()
+	return channels
+}

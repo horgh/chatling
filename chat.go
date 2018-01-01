@@ -60,6 +60,15 @@ func (h Handler) chatRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Send current state.
+	if err := writeWebSocket(wc.conn, map[string]interface{}{
+		"nick":     client.client.GetNick(),
+		"channels": client.client.GetChannels(),
+	}); err != nil {
+		h.logError(r, fmt.Errorf("error sending state to websocket: %s", err))
+		return
+	}
+
 	webRecvChan := make(chan map[string]string, 64)
 	go wc.webSocketReader(webRecvChan)
 
