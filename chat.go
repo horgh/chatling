@@ -87,14 +87,14 @@ func (w *WebClient) logError(err error) {
 	log.Printf("%s: %s", w.remoteAddr, err)
 }
 
-// IRCClient holds an IRC client connection and provides access to it from
+// Client holds an IRC client connection and provides access to it from
 // multiple goroutines.
 //
-// An *ircclient.Client is really only usable by a single goroutine. Primarily
-// because it publishes each message only once. In order to handle multiple web
-// clients all using the same one, we wrap around it here and deliver the
-// message to each.
-type IRCClient struct {
+// An *ircclient.Client is only usable by a single goroutine. Primarily because
+// it publishes each message only once. In order to handle multiple web clients
+// all using the same one, we wrap around it here and deliver the message to
+// each.
+type Client struct {
 	name      string
 	client    *ircclient.Client
 	listeners []chan<- irc.Message
@@ -109,10 +109,10 @@ func (h Handler) getIRCConnection(name string) (
 	name = strings.ToLower(name)
 	recvChan := make(chan irc.Message, 128)
 
-	h.ircClientsMutex.Lock()
-	defer h.ircClientsMutex.Unlock()
+	h.clientsMutex.Lock()
+	defer h.clientsMutex.Unlock()
 
-	client, ok := h.ircClients[name]
+	client, ok := h.clients[name]
 	if ok {
 		client.mutex.Lock()
 		defer client.mutex.Unlock()
@@ -126,21 +126,21 @@ func (h Handler) getIRCConnection(name string) (
 		return nil, nil, fmt.Errorf("error starting IRC client: %s: %s", name, err)
 	}
 
-	client = &IRCClient{
+	client = &Client{
 		name:      name,
 		client:    c,
 		listeners: []chan<- irc.Message{recvChan},
 		mutex:     &sync.Mutex{},
 	}
 
-	h.ircClients[name] = client
+	h.clients[name] = client
 	go h.clientWorker(client)
 
 	return recvChan, sendChan, nil
 }
 
 func (h Handler) clientWorker(
-	c *IRCClient,
+	c *Client,
 ) {
 LOOP:
 	for {
@@ -179,8 +179,8 @@ LOOP:
 		log.Printf("Cleaning up IRC client: %s", c.name)
 	}
 
-	h.ircClientsMutex.Lock()
-	defer h.ircClientsMutex.Unlock()
+	h.clientsMutex.Lock()
+	defer h.clientsMutex.Unlock()
 
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
@@ -193,7 +193,7 @@ LOOP:
 
 	c.client.Stop()
 
-	delete(h.ircClients, strings.ToLower(c.name))
+	delete(h.clients, strings.ToLower(c.name))
 }
 
 func (w *WebClient) webSocketReader(

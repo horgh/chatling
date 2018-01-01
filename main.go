@@ -79,13 +79,13 @@ func printUsage(err error) {
 
 // Handler responds to HTTP requests.
 type Handler struct {
-	dir             string
-	upgrader        *websocket.Upgrader
-	verbose         bool
-	ircServer       string
-	ircPort         uint16
-	ircClients      map[string]*IRCClient
-	ircClientsMutex *sync.Mutex
+	dir          string
+	upgrader     *websocket.Upgrader
+	verbose      bool
+	ircServer    string
+	ircPort      uint16
+	clients      map[string]*Client
+	clientsMutex *sync.Mutex
 }
 
 func newHandler(args *Args) (Handler, error) {
@@ -93,13 +93,13 @@ func newHandler(args *Args) (Handler, error) {
 	// demand so we don't have to restart this program to see new HTML/JS.
 
 	return Handler{
-		dir:             args.dir,
-		upgrader:        &websocket.Upgrader{},
-		verbose:         args.verbose,
-		ircServer:       args.ircServer,
-		ircPort:         args.ircPort,
-		ircClients:      map[string]*IRCClient{},
-		ircClientsMutex: &sync.Mutex{},
+		dir:          args.dir,
+		upgrader:     &websocket.Upgrader{},
+		verbose:      args.verbose,
+		ircServer:    args.ircServer,
+		ircPort:      args.ircPort,
+		clients:      map[string]*Client{},
+		clientsMutex: &sync.Mutex{},
 	}, nil
 }
 
