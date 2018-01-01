@@ -149,21 +149,7 @@ LOOP:
 			if !ok {
 				break LOOP
 			}
-			c.mutex.Lock()
-			newListeners := make([]chan<- irc.Message, 0, len(c.listeners))
-			for _, l := range c.listeners {
-				select {
-				case l <- m:
-					newListeners = append(newListeners, l)
-				default:
-					if h.verbose {
-						log.Printf("IRC client listener is too slow: %s", c.name)
-					}
-					close(l)
-				}
-			}
-			c.listeners = newListeners
-			c.mutex.Unlock()
+			c.publish(h.verbose, m)
 		case err, ok := <-c.client.GetErrorChannel():
 			if !ok {
 				break LOOP
@@ -194,6 +180,24 @@ LOOP:
 	c.client.Stop()
 
 	delete(h.clients, strings.ToLower(c.name))
+}
+
+func (c *Client) publish(verbose bool, m irc.Message) {
+	c.mutex.Lock()
+	newListeners := make([]chan<- irc.Message, 0, len(c.listeners))
+	for _, l := range c.listeners {
+		select {
+		case l <- m:
+			newListeners = append(newListeners, l)
+		default:
+			if verbose {
+				log.Printf("IRC client listener is too slow: %s", c.name)
+			}
+			close(l)
+		}
+	}
+	c.listeners = newListeners
+	c.mutex.Unlock()
 }
 
 func (w *WebClient) webSocketReader(
