@@ -54,7 +54,7 @@ func (h Handler) chatRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	// TODO(horgh): Password
 
-	recvChan, sendChan, err := h.getIRCConnection(name)
+	client, recvChan, sendChan, err := h.getIRCConnection(name)
 	if err != nil {
 		h.logError(r, fmt.Errorf("error retrieving IRC connection: %s", err))
 		return
@@ -70,12 +70,12 @@ LOOP:
 			if !ok {
 				break LOOP
 			}
-			wc.handleClientMessage(sendChan, m)
+			wc.handleWebClientMessage(client, sendChan, m)
 		case m, ok := <-recvChan:
 			if !ok {
 				break LOOP
 			}
-			wc.handleIRCMessage(m)
+			wc.handleIRCClientMessage(m)
 		}
 	}
 
@@ -102,6 +102,7 @@ type Client struct {
 }
 
 func (h Handler) getIRCConnection(name string) (
+	*Client,
 	<-chan irc.Message,
 	chan<- irc.Message,
 	error,
@@ -117,13 +118,14 @@ func (h Handler) getIRCConnection(name string) (
 		client.mutex.Lock()
 		defer client.mutex.Unlock()
 		client.listeners = append(client.listeners, recvChan)
-		return recvChan, client.client.GetSendChannel(), nil
+		return client, recvChan, client.client.GetSendChannel(), nil
 	}
 
 	c := ircclient.NewClient(name, h.ircServer, h.ircPort)
 	_, sendChan, _, err := c.Start()
 	if err != nil {
-		return nil, nil, fmt.Errorf("error starting IRC client: %s: %s", name, err)
+		return nil, nil, nil, fmt.Errorf("error starting IRC client: %s: %s", name,
+			err)
 	}
 
 	client = &Client{
@@ -136,7 +138,7 @@ func (h Handler) getIRCConnection(name string) (
 	h.clients[name] = client
 	go h.clientWorker(client)
 
-	return recvChan, sendChan, nil
+	return client, recvChan, sendChan, nil
 }
 
 func (h Handler) clientWorker(
@@ -250,7 +252,8 @@ var joinRE = regexp.MustCompile(`(?i)/join\s+(#\S*)`)
 var messageRE = regexp.MustCompile(`(?i)/msg\s+(\S+)\s+(.+)`)
 
 // Do something with a message from a web client.
-func (w *WebClient) handleClientMessage(
+func (w *WebClient) handleWebClientMessage(
+	c *Client,
 	sendChan chan<- irc.Message,
 	m map[string]string,
 ) {
@@ -272,10 +275,15 @@ func (w *WebClient) handleClientMessage(
 	}
 
 	if matches := messageRE.FindStringSubmatch(message); matches != nil {
-		sendChan <- irc.Message{
+		m := irc.Message{
 			Command: "PRIVMSG",
 			Params:  []string{matches[1], matches[2]},
 		}
+		sendChan <- m
+		// Write it to the listeners. This is because we don't get PRIVMSG echoed
+		// back to us by the server, and if we have other web clients using the
+		// same connection they won't otherwise see their own message.
+		c.publish(w.verbose, m)
 		return
 	}
 
@@ -283,7 +291,7 @@ func (w *WebClient) handleClientMessage(
 }
 
 // Do something with a message from an IRC client.
-func (w *WebClient) handleIRCMessage(
+func (w *WebClient) handleIRCClientMessage(
 	m irc.Message,
 ) {
 	if w.verbose {
