@@ -107,13 +107,12 @@ func (h Handler) getIRCConnection(name string) (
 	chan<- irc.Message,
 	error,
 ) {
-	name = strings.ToLower(name)
 	recvChan := make(chan irc.Message, 128)
 
 	h.clientsMutex.Lock()
 	defer h.clientsMutex.Unlock()
 
-	client, ok := h.clients[name]
+	client, ok := h.clients[strings.ToLower(name)]
 	if ok {
 		client.mutex.Lock()
 		defer client.mutex.Unlock()
@@ -135,7 +134,7 @@ func (h Handler) getIRCConnection(name string) (
 		mutex:     &sync.Mutex{},
 	}
 
-	h.clients[name] = client
+	h.clients[strings.ToLower(name)] = client
 	go h.clientWorker(client)
 
 	return client, recvChan, sendChan, nil
