@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"html/template"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -103,10 +104,22 @@ func newHandler(args *Args) (Handler, error) {
 	}, nil
 }
 
+var pathToFile = map[string]map[string]string{
+	"/": {
+		"file":         "index.html",
+		"content-type": `text/html; charset="utf-8"`,
+	},
+	"/vue.js": {
+		"file":         "/vue.js",
+		"content-type": `application/javascript`,
+	},
+}
+
 // ServeHTTP responds to an HTTP request.
 func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.Method == "GET" && r.URL.Path == "/" {
-		h.indexRequest(w, r)
+	if r.Method == "GET" && pathToFile[r.URL.Path] != nil {
+		h.sendStaticFile(w, r, pathToFile[r.URL.Path]["file"],
+			pathToFile[r.URL.Path]["content-type"])
 		return
 	}
 
@@ -118,16 +131,27 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.errorRequest(w, r, http.StatusBadRequest, fmt.Errorf("path not found"))
 }
 
-func (h Handler) indexRequest(w http.ResponseWriter, r *http.Request) {
-	t, err := template.ParseFiles(filepath.Join(h.dir, "index.html"))
+func (h Handler) sendStaticFile(
+	w http.ResponseWriter,
+	r *http.Request,
+	filename,
+	contentType string,
+) {
+	p := filepath.Join(h.dir, filename)
+	fh, err := os.Open(p)
 	if err != nil {
-		h.logError(r, fmt.Errorf("error parsing index template: %s", err))
+		h.errorRequest(w, r, http.StatusInternalServerError, err)
 		return
 	}
 
-	if err := t.Execute(w, nil); err != nil {
-		h.logError(r, fmt.Errorf("error executing index template: %s", err))
-		return
+	defer func() {
+		if err := fh.Close(); err != nil {
+			h.logError(r, fmt.Errorf("error closing file: %s", err))
+		}
+	}()
+
+	if _, err := io.Copy(w, fh); err != nil {
+		h.logError(r, fmt.Errorf("error writing file: %s", err))
 	}
 }
 
