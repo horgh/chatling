@@ -37,27 +37,23 @@ document.addEventListener('DOMContentLoaded', function() {
 				this.conn = new WebSocket(this.url);
 
 				this.conn.onclose = function() {
-					vm.add_line({type: TYPE_SYSTEM,
-						message: 'Connection closed.'});
+					vm.add_line(TYPE_SYSTEM, 'Connection closed.');
 				};
 
 				this.conn.onerror = function(evt) {
 					// https://www.w3.org/TR/2012/CR-websockets-20120920/ says
 					// event type is error.
 					// https://developer.mozilla.org/en-US/docs/Web/API/ErrorEvent
-					vm.add_line({type: TYPE_SYSTEM,
-						message: 'Error: ' + evt.message});
+					vm.add_line(TYPE_SYSTEM, 'Error: ' + evt.message);
 				};
 
 				this.conn.onmessage = function(evt) {
-					vm.add_line({type: TYPE_MESSAGE,
-						message: 'Got message: ' + evt.data});
+					vm.add_line(TYPE_MESSAGE, 'Got message: ' + evt.data);
 					//const m = JSON.parse(evt.data)
 				};
 
 				this.conn.onopen = function() {
-					vm.add_line({type: TYPE_SYSTEM,
-						message: 'Connection opened.'});
+					vm.add_line(TYPE_SYSTEM, 'Connection opened.');
 					vm.conn.send(JSON.stringify({
 						name:     vm.name,
 						password: vm.password
@@ -66,10 +62,7 @@ document.addEventListener('DOMContentLoaded', function() {
 				};
 			},
 			maybe_send: function() {
-				this.add_line({
-					type:    TYPE_SEND,
-					message: this.input
-				});
+				this.add_line(TYPE_SEND, this.input);
 
 				this.conn.send(JSON.stringify({
 					message: this.input
@@ -77,25 +70,25 @@ document.addEventListener('DOMContentLoaded', function() {
 
 				this.input = '';
 			},
-			add_line: function(m) {
+			add_line: function(type, message) {
 				const line = document.createElement('div');
 
-				switch (m.type) {
+				switch (type) {
 				case TYPE_SYSTEM:
 					line.classList.add('type-system');
-					line.innerHTML = ' - ' + m.message;
+					line.innerHTML = ' - ' + message;
 					break;
 				case TYPE_MESSAGE:
 					line.classList.add('type-message');
-					line.innerHTML = ' < ' + m.message;
+					line.innerHTML = ' < ' + message;
 					break;
 				case TYPE_SEND:
 					line.classList.add('type-send');
-					line.innerHTML = ' > ' + m.message;
+					line.innerHTML = ' > ' + message;
 					break;
 				default:
 					window.console.log('unexpected message type');
-					line.innerHTML = ' ? ' + m.message;
+					line.innerHTML = ' ? ' + message;
 					break;
 				}
 
